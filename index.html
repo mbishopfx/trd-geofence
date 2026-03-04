@@ -3,29 +3,252 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>TRD Geofence</title>
+    <title>TRD Geofence Full Stack</title>
     <style>
+      :root {
+        --bg: #0b1220;
+        --panel: #121c2f;
+        --text: #f1f5f9;
+        --muted: #9fb3c8;
+        --accent: #22d3ee;
+        --success: #22c55e;
+        --danger: #ef4444;
+        --border: #213147;
+      }
+      * {
+        box-sizing: border-box;
+      }
       body {
         margin: 0;
-        min-height: 100vh;
-        display: grid;
-        place-items: center;
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        background: #0b1220;
-        color: #f1f5f9;
+        font-family: "Avenir Next", "Segoe UI", sans-serif;
+        color: var(--text);
+        background:
+          radial-gradient(circle at 10% -10%, #1f3553 0%, transparent 40%),
+          radial-gradient(circle at 90% 120%, #0e7490 0%, transparent 35%),
+          var(--bg);
       }
       main {
-        text-align: center;
-        padding: 2rem;
+        max-width: 960px;
+        margin: 0 auto;
+        padding: 2.5rem 1rem 4rem;
       }
-      h1 { margin: 0 0 0.5rem; font-size: clamp(2rem, 5vw, 3rem); }
-      p { margin: 0; opacity: 0.85; }
+      h1 {
+        margin: 0;
+        font-size: clamp(2rem, 5vw, 3.4rem);
+        letter-spacing: 0.02em;
+      }
+      p {
+        margin: 0.5rem 0 0;
+        color: var(--muted);
+      }
+      .panel {
+        margin-top: 1.5rem;
+        background: linear-gradient(180deg, #12213a 0%, #0e1a2d 100%);
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        padding: 1.25rem;
+      }
+      .grid {
+        display: grid;
+        gap: 0.75rem;
+      }
+      .grid-2 {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+      label {
+        font-size: 0.9rem;
+        color: var(--muted);
+        display: block;
+        margin-bottom: 0.35rem;
+      }
+      input {
+        width: 100%;
+        padding: 0.7rem 0.8rem;
+        border-radius: 10px;
+        border: 1px solid var(--border);
+        background: #0b1527;
+        color: var(--text);
+      }
+      input:focus {
+        outline: 1px solid var(--accent);
+      }
+      .actions {
+        margin-top: 1rem;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem;
+      }
+      button {
+        border: 0;
+        border-radius: 10px;
+        padding: 0.7rem 1rem;
+        font-weight: 600;
+        cursor: pointer;
+        background: var(--accent);
+        color: #04202b;
+      }
+      button.secondary {
+        background: #1e293b;
+        color: var(--text);
+        border: 1px solid var(--border);
+      }
+      .status {
+        margin-top: 1rem;
+        padding: 0.8rem;
+        border-radius: 10px;
+        font-weight: 600;
+        border: 1px solid var(--border);
+        background: #0b1527;
+      }
+      .status.ok {
+        color: var(--success);
+        border-color: rgba(34, 197, 94, 0.5);
+      }
+      .status.error {
+        color: var(--danger);
+        border-color: rgba(239, 68, 68, 0.5);
+      }
+      pre {
+        margin-top: 1rem;
+        border-radius: 10px;
+        border: 1px solid var(--border);
+        background: #081120;
+        padding: 1rem;
+        overflow: auto;
+        color: #c7d8ec;
+      }
+      @media (max-width: 720px) {
+        .grid-2 {
+          grid-template-columns: 1fr;
+        }
+      }
     </style>
   </head>
   <body>
     <main>
       <h1>TRD Geofence</h1>
-      <p>Initial deployment is live.</p>
+      <p>Frontend on Vercel + backend API on Railway. Test both here.</p>
+
+      <section class="panel">
+        <div>
+          <label for="apiBase">Railway API Base URL</label>
+          <input
+            id="apiBase"
+            value="https://trd-geofence-production.up.railway.app"
+            placeholder="https://your-api.up.railway.app"
+          />
+        </div>
+        <div class="actions">
+          <button id="healthButton" class="secondary">Check API Health</button>
+        </div>
+      </section>
+
+      <section class="panel">
+        <form id="geofenceForm">
+          <div class="grid grid-2">
+            <div>
+              <label for="centerLat">Center Lat</label>
+              <input id="centerLat" type="number" step="any" value="41.8781" required />
+            </div>
+            <div>
+              <label for="centerLng">Center Lng</label>
+              <input id="centerLng" type="number" step="any" value="-87.6298" required />
+            </div>
+            <div>
+              <label for="pointLat">Point Lat</label>
+              <input id="pointLat" type="number" step="any" value="41.8818" required />
+            </div>
+            <div>
+              <label for="pointLng">Point Lng</label>
+              <input id="pointLng" type="number" step="any" value="-87.6231" required />
+            </div>
+            <div>
+              <label for="radiusMiles">Radius (Miles)</label>
+              <input id="radiusMiles" type="number" step="any" min="0.01" value="1.5" required />
+            </div>
+          </div>
+          <div class="actions">
+            <button type="submit">Run Geofence Check</button>
+          </div>
+        </form>
+        <div id="status" class="status">Ready</div>
+        <pre id="responseBlock">No request yet.</pre>
+      </section>
     </main>
+
+    <script>
+      const apiBaseInput = document.getElementById("apiBase");
+      const healthButton = document.getElementById("healthButton");
+      const geofenceForm = document.getElementById("geofenceForm");
+      const status = document.getElementById("status");
+      const responseBlock = document.getElementById("responseBlock");
+
+      function getApiBase() {
+        return apiBaseInput.value.trim().replace(/\/+$/, "");
+      }
+
+      function setStatus(text, type) {
+        status.textContent = text;
+        status.className = "status";
+        if (type) {
+          status.classList.add(type);
+        }
+      }
+
+      function setResponse(payload) {
+        responseBlock.textContent = JSON.stringify(payload, null, 2);
+      }
+
+      async function callApi(path, options = {}) {
+        const response = await fetch(`${getApiBase()}${path}`, {
+          headers: { "Content-Type": "application/json" },
+          ...options
+        });
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(body.error || `Request failed with ${response.status}`);
+        }
+        return body;
+      }
+
+      healthButton.addEventListener("click", async () => {
+        try {
+          setStatus("Checking API health...", null);
+          const data = await callApi("/api/health");
+          setStatus("API is healthy", "ok");
+          setResponse(data);
+        } catch (error) {
+          setStatus(error.message, "error");
+          setResponse({ ok: false, error: error.message });
+        }
+      });
+
+      geofenceForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const payload = {
+          centerLat: Number(document.getElementById("centerLat").value),
+          centerLng: Number(document.getElementById("centerLng").value),
+          pointLat: Number(document.getElementById("pointLat").value),
+          pointLng: Number(document.getElementById("pointLng").value),
+          radiusMiles: Number(document.getElementById("radiusMiles").value)
+        };
+
+        try {
+          setStatus("Running geofence check...", null);
+          const data = await callApi("/api/geofence/check", {
+            method: "POST",
+            body: JSON.stringify(payload)
+          });
+          setStatus(
+            data.insideGeofence ? "Point is inside geofence" : "Point is outside geofence",
+            data.insideGeofence ? "ok" : "error"
+          );
+          setResponse(data);
+        } catch (error) {
+          setStatus(error.message, "error");
+          setResponse({ ok: false, error: error.message });
+        }
+      });
+    </script>
   </body>
 </html>

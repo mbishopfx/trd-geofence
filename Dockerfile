@@ -2,9 +2,11 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-# Simple static hosting for Railway with dynamic PORT support
-RUN npm install -g serve
+COPY backend/package*.json ./
+RUN npm ci --omit=dev
 
-COPY . .
+COPY backend/. ./
 
-CMD ["sh", "-c", "serve -s . -l ${PORT:-3000}"]
+ENV NODE_ENV=production
+
+CMD ["npm", "start"]
