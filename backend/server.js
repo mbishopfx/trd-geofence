@@ -19,7 +19,7 @@ const corsOptions =
             callback(null, true);
             return;
           }
-          callback(new Error("Origin is not allowed by CORS policy"));
+          callback(null, false);
         }
       };
 
