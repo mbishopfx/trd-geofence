@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import L from "leaflet";
 import "leaflet-draw";
-import { CheckCircle2, Crosshair, Rocket, Wrench, X } from "lucide-react";
+import { CheckCircle2, Crosshair, Link2, Rocket, Save, SlidersHorizontal, Wrench, X } from "lucide-react";
+import { apiRequest } from "../lib/api";
 import { type SetupLocation, useTrueRankStore } from "../lib/store";
 
 delete (L.Icon.Default.prototype as unknown as { _getIconUrl?: unknown })._getIconUrl;
@@ -30,12 +31,19 @@ function offsetPoint(base: { lat: number; lng: number }, latOffset: number, lngO
   return [base.lat + latOffset, base.lng + lngOffset] as [number, number];
 }
 
+function clampNumber(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, value));
+}
+
 export function CampaignArchitect() {
   const setup = useTrueRankStore((s) => s.setup);
+  const campaigns = useTrueRankStore((s) => s.campaigns);
+  const apiBaseUrl = useTrueRankStore((s) => s.apiBaseUrl);
   const platformOptions = useTrueRankStore((s) => s.platformOptions);
   const loading = useTrueRankStore((s) => s.loading);
   const launchCampaign = useTrueRankStore((s) => s.launchCampaign);
   const activationChecklist = useTrueRankStore((s) => s.activationChecklist);
+  const refreshDashboard = useTrueRankStore((s) => s.refreshDashboard);
 
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInstance = useRef<L.Map | null>(null);
@@ -49,6 +57,11 @@ export function CampaignArchitect() {
   const [isLaunching, setIsLaunching] = useState(false);
   const [drawnCoords, setDrawnCoords] = useState<Array<{ lat: number; lng: number }>>([]);
   const [launchMessage, setLaunchMessage] = useState<string>("");
+  const [isPushingGoogle, setIsPushingGoogle] = useState(false);
+  const [googlePushMessage, setGooglePushMessage] = useState("");
+  const [isSavingRules, setIsSavingRules] = useState(false);
+  const [ruleSaveMessage, setRuleSaveMessage] = useState("");
+  const [ruleCampaignId, setRuleCampaignId] = useState<string>("");
 
   const [campaignName, setCampaignName] = useState("Q2 Honest Pricing Conquest");
   const [dailyBudget, setDailyBudget] = useState(150);
@@ -56,6 +69,10 @@ export function CampaignArchitect() {
   const [radiusFeet, setRadiusFeet] = useState(450);
   const [dwellTime, setDwellTime] = useState(12);
   const [velocityMax, setVelocityMax] = useState(6);
+  const [accuracyMaxM, setAccuracyMaxM] = useState(100);
+  const [cooldownHours, setCooldownHours] = useState(24);
+  const [sessionBoundaryMin, setSessionBoundaryMin] = useState(20);
+  const [lateGraceMin, setLateGraceMin] = useState(30);
   const [message, setMessage] = useState("NO GAMES - Just Honest Pricing and Extraordinary Service");
   const [ctaUrl, setCtaUrl] = useState("https://autodirect.example.com/schedule-test-drive");
   const [platforms, setPlatforms] = useState<Record<string, boolean>>({
@@ -65,6 +82,7 @@ export function CampaignArchitect() {
   });
 
   const [competitorAddresses, setCompetitorAddresses] = useState<Record<string, string>>({});
+  const [competitorFenceModes, setCompetitorFenceModes] = useState<Record<string, "radius" | "polygon">>({});
 
   const selectedLocation = useMemo<SetupLocation | null>(() => {
     if (!setup) {
@@ -72,6 +90,14 @@ export function CampaignArchitect() {
     }
     return setup.locations.find((location) => location.id === selectedLocationId) || setup.locations[0] || null;
   }, [setup, selectedLocationId]);
+
+  const linkedGoogleCampaign = useMemo(
+    () =>
+      campaigns.find(
+        (campaign) => campaign.integration?.source === "google_ads" && Boolean(campaign.integration?.googleCampaignId)
+      ) || null,
+    [campaigns]
+  );
 
   useEffect(() => {
     if (!setup || setup.locations.length === 0) {
@@ -93,6 +119,19 @@ export function CampaignArchitect() {
       return next;
     });
 
+    setCompetitorFenceModes((current) => {
+      const next = { ...current };
+      for (const location of setup.locations) {
+        for (const competitor of location.competitorSuggestions) {
+          const key = `${location.id}:${competitor.name}`;
+          if (!(key in next)) {
+            next[key] = "radius";
+          }
+        }
+      }
+      return next;
+    });
+
     setRadiusFeet(setup.fenceRecommendations.defaultFeet);
     setDwellTime(setup.fenceRecommendations.dwellTimeMin);
     setVelocityMax(setup.fenceRecommendations.velocityMaxMph);
@@ -101,11 +140,22 @@ export function CampaignArchitect() {
   }, [setup]);
 
   useEffect(() => {
+    if (ruleCampaignId) {
+      return;
+    }
+
+    const preferred = linkedGoogleCampaign?.id || campaigns[0]?.id;
+    if (preferred) {
+      setRuleCampaignId(preferred);
+    }
+  }, [ruleCampaignId, linkedGoogleCampaign, campaigns]);
+
+  useEffect(() => {
     if (!mapRef.current || mapInstance.current) {
       return;
     }
 
-    const map = L.map(mapRef.current).setView([40.355, -74.075], 13);
+    const map = L.map(mapRef.current).setView([33.8806084, -98.5460791], 13);
 
     L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
       attribution: "&copy; TrueRankDigital Engine",
@@ -226,6 +276,46 @@ export function CampaignArchitect() {
     setFixedOpsActive((value) => !value);
   }
 
+  async function handleSaveLiveRuleSet(): Promise<void> {
+    const targetCampaignId = ruleCampaignId || linkedGoogleCampaign?.id || campaigns[0]?.id || "";
+    if (!targetCampaignId) {
+      setRuleSaveMessage("Create or sync a campaign first, then save rules.");
+      return;
+    }
+
+    setIsSavingRules(true);
+    setRuleSaveMessage("Saving live qualification rules...");
+
+    try {
+      await apiRequest<{ ok: boolean; campaignId: string }>(
+        `/api/campaigns/${targetCampaignId}/rules`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            accuracyMaxM,
+            cooldownHours,
+            sessionBoundaryMin,
+            lateGraceMin,
+            dwellMin: dwellTime,
+            velocityMaxMph: velocityMax
+          })
+        },
+        apiBaseUrl
+      );
+
+      setRuleSaveMessage(`Live rule set saved on campaign ${targetCampaignId}.`);
+      await refreshDashboard();
+    } catch (error) {
+      if (error instanceof Error) {
+        setRuleSaveMessage(error.message);
+      } else {
+        setRuleSaveMessage("Failed to save live rule set.");
+      }
+    } finally {
+      setIsSavingRules(false);
+    }
+  }
+
   async function handleLaunch(): Promise<void> {
     if (!selectedLocation) {
       return;
@@ -240,12 +330,14 @@ export function CampaignArchitect() {
       return;
     }
 
+    const homeShapeType: "radius" | "polygon" = drawnCoords.length >= 3 ? "polygon" : "radius";
     const defaultCoords = [selectedLocation.coordinates];
-    const coords = drawnCoords.length > 0 ? drawnCoords : defaultCoords;
+    const coords = homeShapeType === "polygon" ? drawnCoords : defaultCoords;
 
     const fences = [
       {
         type: "home" as const,
+        shapeType: homeShapeType,
         locationName: selectedLocation.dealershipName,
         address: selectedLocation.address,
         radiusFeet,
@@ -256,15 +348,17 @@ export function CampaignArchitect() {
       },
       ...selectedLocation.competitorSuggestions.map((competitor) => {
         const key = `${selectedLocation.id}:${competitor.name}`;
+        const mode = competitorFenceModes[key] || "radius";
         return {
           type: "competitor" as const,
+          shapeType: mode,
           locationName: competitor.name,
           address: competitorAddresses[key] || "",
           radiusFeet,
           dwellTimeMin: dwellTime,
           velocityMax,
           isEVMode: false,
-          coordinates: []
+          coordinates: mode === "polygon" ? coords : []
         };
       })
     ];
@@ -285,9 +379,18 @@ export function CampaignArchitect() {
         cpcEstimate: 2.4,
         ctaUrl,
         message,
+        qualificationRules: {
+          accuracyMaxM,
+          cooldownHours,
+          sessionBoundaryMin,
+          lateGraceMin,
+          dwellMin: dwellTime,
+          velocityMaxMph: velocityMax
+        },
         fences
       });
 
+      setRuleCampaignId(campaign.id);
       setLaunchMessage(
         campaign.status === "active"
           ? `Campaign ${campaign.name} launched.`
@@ -305,6 +408,92 @@ export function CampaignArchitect() {
     }
   }
 
+  async function pushCompetitorFenceToGoogle(): Promise<void> {
+    if (!selectedLocation) {
+      return;
+    }
+
+    if (!linkedGoogleCampaign?.integration?.googleCampaignId) {
+      setGooglePushMessage("Activate Nissan live data first so a Google campaign is linked.");
+      return;
+    }
+
+    const primaryCompetitor = selectedLocation.competitorSuggestions[0];
+    if (!primaryCompetitor) {
+      setGooglePushMessage("No competitor is configured for this location.");
+      return;
+    }
+
+    const competitorKey = `${selectedLocation.id}:${primaryCompetitor.name}`;
+    const competitorAddress = (competitorAddresses[competitorKey] || primaryCompetitor.address || "").trim();
+    if (!competitorAddress) {
+      setGooglePushMessage("Enter the competitor address before pushing to Google Ads.");
+      return;
+    }
+
+    const radiusMiles = Math.max(0.3, Number((radiusFeet / 5280).toFixed(2)));
+
+    setIsPushingGoogle(true);
+    setGooglePushMessage("Pushing competitor geofence to Google Ads...");
+    try {
+      const response = await apiRequest<{
+        ok: boolean;
+        googleCampaignId: string;
+        competitorName: string;
+        radiusMiles: number;
+      }>(
+        "/api/integrations/google-ads/nissan/geofence/push",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            googleCampaignId: linkedGoogleCampaign.integration.googleCampaignId,
+            competitorName: primaryCompetitor.name,
+            competitorAddress,
+            radiusMiles,
+            centerLat: 33.8884365,
+            centerLng: -98.4861729,
+            replaceExisting: true,
+            validateOnly: false,
+            confirmNoEUPoliticalAds: true
+          })
+        },
+        apiBaseUrl
+      );
+
+      setGooglePushMessage(
+        `Google Ads geofence pushed: ${response.competitorName} at ${response.radiusMiles}mi on campaign ${response.googleCampaignId}.`
+      );
+      await refreshDashboard();
+    } catch (error) {
+      if (error instanceof Error) {
+        setGooglePushMessage(error.message);
+      } else {
+        setGooglePushMessage("Failed to push geofence to Google Ads.");
+      }
+    } finally {
+      setIsPushingGoogle(false);
+    }
+  }
+
+  function applyNearSniperPreset(): void {
+    setRadiusFeet(5280);
+    setDwellTime(12);
+    setVelocityMax(6);
+    setRetargetDays(21);
+    setAccuracyMaxM(100);
+    setCooldownHours(24);
+    setSessionBoundaryMin(20);
+    setLateGraceMin(30);
+    setPlatforms((current) => ({
+      ...current,
+      google: true,
+      meta: true
+    }));
+    setLaunchMessage(
+      "Near-Sniper preset applied: 1-mile radius, 12 min dwell, 6 mph max, 21-day retarget window."
+    );
+  }
+
   return (
     <div className="space-y-4">
       <div className="tr-glass rounded-2xl p-4">
@@ -317,13 +506,44 @@ export function CampaignArchitect() {
               Build home fences + competitor conquest campaigns with platform-ready launch payloads.
             </p>
           </div>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={applyNearSniperPreset}
+              className="rounded-lg border border-white/15 bg-black/25 px-4 py-2 text-sm text-zinc-200"
+            >
+              <span className="inline-flex items-center gap-2">
+                <SlidersHorizontal size={16} /> Apply Near-Sniper Preset
+              </span>
+            </button>
             <button
               type="button"
               onClick={() => setIsModalOpen(true)}
               className="rounded-lg bg-tr-secondary px-4 py-2 text-sm font-semibold text-black"
             >
               Open Launch Modal
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                pushCompetitorFenceToGoogle().catch(() => {});
+              }}
+              disabled={isPushingGoogle}
+              className="rounded-lg border border-tr-primary/30 bg-tr-primary/10 px-4 py-2 text-sm text-tr-primary disabled:opacity-60"
+            >
+              <span className="inline-flex items-center gap-2">
+                <Link2 size={16} /> {isPushingGoogle ? "Pushing..." : "Push Competitor Fence to Google"}
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={handleSaveLiveRuleSet}
+              disabled={isSavingRules}
+              className="rounded-lg border border-emerald-400/30 bg-emerald-400/10 px-4 py-2 text-sm text-emerald-300 disabled:opacity-60"
+            >
+              <span className="inline-flex items-center gap-2">
+                <Save size={16} /> {isSavingRules ? "Saving..." : "Save as Live Rule Set"}
+              </span>
             </button>
             <button
               type="button"
@@ -338,6 +558,62 @@ export function CampaignArchitect() {
                 <Wrench size={16} /> Fixed Ops Layer
               </span>
             </button>
+          </div>
+        </div>
+
+        <div className="mb-3 grid gap-2 md:grid-cols-[2fr,1fr]">
+          <div className="rounded-xl border border-white/10 bg-black/20 p-3">
+            <p className="mb-2 text-xs uppercase tracking-wider text-zinc-400">Qualification Rules</p>
+            <div className="grid gap-2 md:grid-cols-3">
+              <label className="text-xs text-zinc-300">
+                Accuracy Max (m)
+                <input
+                  type="number"
+                  min={5}
+                  max={500}
+                  value={accuracyMaxM}
+                  onChange={(event) => setAccuracyMaxM(clampNumber(Number(event.target.value), 5, 500))}
+                  className="mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-2 py-1 text-sm text-white"
+                />
+              </label>
+              <label className="text-xs text-zinc-300">
+                Cooldown (hours)
+                <input
+                  type="number"
+                  min={1}
+                  max={72}
+                  value={cooldownHours}
+                  onChange={(event) => setCooldownHours(clampNumber(Number(event.target.value), 1, 72))}
+                  className="mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-2 py-1 text-sm text-white"
+                />
+              </label>
+              <label className="text-xs text-zinc-300">
+                Session Boundary (min)
+                <input
+                  type="number"
+                  min={5}
+                  max={60}
+                  value={sessionBoundaryMin}
+                  onChange={(event) => setSessionBoundaryMin(clampNumber(Number(event.target.value), 5, 60))}
+                  className="mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-2 py-1 text-sm text-white"
+                />
+              </label>
+            </div>
+          </div>
+          <div className="rounded-xl border border-white/10 bg-black/20 p-3">
+            <p className="mb-2 text-xs uppercase tracking-wider text-zinc-400">Rule Target Campaign</p>
+            <select
+              value={ruleCampaignId}
+              onChange={(event) => setRuleCampaignId(event.target.value)}
+              className="w-full rounded-lg border border-white/10 bg-black/40 px-2 py-2 text-sm text-white"
+            >
+              {campaigns.length === 0 && <option value="">No campaigns yet</option>}
+              {campaigns.map((campaign) => (
+                <option key={campaign.id} value={campaign.id}>
+                  {campaign.name}
+                </option>
+              ))}
+            </select>
           </div>
         </div>
 
@@ -364,9 +640,7 @@ export function CampaignArchitect() {
               >
                 <p className="text-sm font-semibold text-white">{location.dealershipName}</p>
                 <p className="mt-1 text-xs text-zinc-400">{location.address}</p>
-                <p className="mt-2 text-xs text-zinc-300">
-                  Competitors confirmed: {filled}/{required}
-                </p>
+                <p className="mt-2 text-xs text-zinc-300">Competitors confirmed: {filled}/{required}</p>
               </button>
             );
           })}
@@ -383,9 +657,21 @@ export function CampaignArchitect() {
         </div>
       )}
 
+      {googlePushMessage && (
+        <div className="tr-glass flex items-center gap-2 rounded-xl border border-tr-primary/30 p-3 text-sm text-zinc-200">
+          <Link2 size={16} className="text-tr-primary" /> {googlePushMessage}
+        </div>
+      )}
+
+      {ruleSaveMessage && (
+        <div className="tr-glass flex items-center gap-2 rounded-xl border border-emerald-400/30 p-3 text-sm text-zinc-200">
+          <Save size={16} className="text-emerald-300" /> {ruleSaveMessage}
+        </div>
+      )}
+
       {isModalOpen && selectedLocation && (
         <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/85 p-4">
-          <div className="tr-glass max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-2xl">
+          <div className="tr-glass max-h-[90vh] w-full max-w-4xl overflow-y-auto rounded-2xl">
             <div className="sticky top-0 z-10 flex items-center justify-between border-b border-white/10 bg-[#0a0a0a]/95 p-4">
               <h3 className="flex items-center gap-2 font-display text-lg text-white">
                 <Rocket className="text-tr-primary" /> Launch Geo-Conquest Campaign
@@ -407,7 +693,11 @@ export function CampaignArchitect() {
                 </div>
                 <div>
                   <label className="mb-1 block text-xs uppercase tracking-wider text-zinc-400">Dealership</label>
-                  <input value={selectedLocation.dealershipName} readOnly className="w-full rounded-lg border border-white/10 bg-black/25 px-3 py-2 text-sm text-zinc-200" />
+                  <input
+                    value={selectedLocation.dealershipName}
+                    readOnly
+                    className="w-full rounded-lg border border-white/10 bg-black/25 px-3 py-2 text-sm text-zinc-200"
+                  />
                 </div>
                 <div>
                   <label className="mb-1 block text-xs uppercase tracking-wider text-zinc-400">Daily Budget ($)</label>
@@ -468,6 +758,56 @@ export function CampaignArchitect() {
                 </div>
               </div>
 
+              <div className="rounded-lg border border-white/10 bg-black/20 p-3">
+                <p className="mb-2 text-xs uppercase tracking-wider text-zinc-400">Qualification Rules</p>
+                <div className="grid gap-3 md:grid-cols-4">
+                  <label className="text-xs text-zinc-300">
+                    Accuracy Max (m)
+                    <input
+                      type="number"
+                      min={5}
+                      max={500}
+                      value={accuracyMaxM}
+                      onChange={(event) => setAccuracyMaxM(clampNumber(Number(event.target.value), 5, 500))}
+                      className="mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-2 py-1 text-sm text-white"
+                    />
+                  </label>
+                  <label className="text-xs text-zinc-300">
+                    Cooldown (h)
+                    <input
+                      type="number"
+                      min={1}
+                      max={72}
+                      value={cooldownHours}
+                      onChange={(event) => setCooldownHours(clampNumber(Number(event.target.value), 1, 72))}
+                      className="mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-2 py-1 text-sm text-white"
+                    />
+                  </label>
+                  <label className="text-xs text-zinc-300">
+                    Session Boundary (min)
+                    <input
+                      type="number"
+                      min={5}
+                      max={60}
+                      value={sessionBoundaryMin}
+                      onChange={(event) => setSessionBoundaryMin(clampNumber(Number(event.target.value), 5, 60))}
+                      className="mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-2 py-1 text-sm text-white"
+                    />
+                  </label>
+                  <label className="text-xs text-zinc-300">
+                    Late Grace (min)
+                    <input
+                      type="number"
+                      min={0}
+                      max={120}
+                      value={lateGraceMin}
+                      onChange={(event) => setLateGraceMin(clampNumber(Number(event.target.value), 0, 120))}
+                      className="mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-2 py-1 text-sm text-white"
+                    />
+                  </label>
+                </div>
+              </div>
+
               <div>
                 <label className="mb-1 block text-xs uppercase tracking-wider text-zinc-400">Primary Message</label>
                 <input
@@ -508,12 +848,14 @@ export function CampaignArchitect() {
               </div>
 
               <div>
-                <p className="mb-2 text-xs uppercase tracking-wider text-zinc-400">Competitor Addresses ({competitorCompletion.filled}/{competitorCompletion.required})</p>
+                <p className="mb-2 text-xs uppercase tracking-wider text-zinc-400">
+                  Competitor Addresses + Fence Type ({competitorCompletion.filled}/{competitorCompletion.required})
+                </p>
                 <div className="space-y-2">
                   {selectedLocation.competitorSuggestions.map((competitor) => {
                     const key = `${selectedLocation.id}:${competitor.name}`;
                     return (
-                      <div key={key} className="grid gap-2 md:grid-cols-[220px,1fr]">
+                      <div key={key} className="grid gap-2 md:grid-cols-[220px,1fr,140px]">
                         <input value={competitor.name} readOnly className="rounded-lg border border-white/10 bg-black/25 px-3 py-2 text-sm text-zinc-200" />
                         <input
                           value={competitorAddresses[key] || ""}
@@ -526,6 +868,19 @@ export function CampaignArchitect() {
                           }
                           className="rounded-lg border border-white/10 bg-black/35 px-3 py-2 text-sm text-white"
                         />
+                        <select
+                          value={competitorFenceModes[key] || "radius"}
+                          onChange={(event) =>
+                            setCompetitorFenceModes((current) => ({
+                              ...current,
+                              [key]: event.target.value === "polygon" ? "polygon" : "radius"
+                            }))
+                          }
+                          className="rounded-lg border border-white/10 bg-black/35 px-2 py-2 text-sm text-white"
+                        >
+                          <option value="radius">Radius</option>
+                          <option value="polygon">Polygon</option>
+                        </select>
                       </div>
                     );
                   })}

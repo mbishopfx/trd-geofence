@@ -4,10 +4,19 @@
   "private": true,
   "type": "commonjs",
   "scripts": {
-    "start": "node server.js"
+    "start": "node src/runner.js",
+    "worker:ingest": "node src/workers/ingest-worker.js",
+    "worker:qualifier": "node src/workers/qualifier-worker.js",
+    "worker:activation": "node src/workers/activation-worker.js",
+    "worker:scheduler": "node src/workers/scheduler-worker.js",
+    "worker:all": "node src/workers/run-all.js",
+    "migrate": "node -e \"require('./src/dsp/service').ensureInfrastructure().then(()=>{console.log('migrations complete')}).catch((err)=>{console.error(err);process.exit(1);})\""
   },
   "dependencies": {
+    "bullmq": "^5.70.1",
     "cors": "^2.8.5",
-    "express": "^4.21.2"
+    "express": "^4.21.2",
+    "ioredis": "^5.10.0",
+    "pg": "^8.19.0"
   }
 }

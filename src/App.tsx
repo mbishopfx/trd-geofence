@@ -5,6 +5,9 @@ import {
   PenTool,
   Presentation,
   RefreshCcw,
+  Search,
+  Send,
+  Server,
   ShieldCheck,
   TrendingUp,
   Users,
@@ -17,11 +20,17 @@ import { AudienceMatrix } from "./pages/AudienceMatrix";
 import { CreativeVault } from "./pages/CreativeVault";
 import { FixedOpsSniper } from "./pages/FixedOpsSniper";
 import { ROIForecaster } from "./pages/ROIForecaster";
+import ActivationConsole from "./pages/ActivationConsole";
+import EventTraceInspector from "./pages/EventTraceInspector";
+import PartnerFeedMonitor from "./pages/PartnerFeedMonitor";
 
 type TabKey =
   | "command-center"
   | "campaign-architect"
   | "audience-matrix"
+  | "activation-console"
+  | "event-trace-inspector"
+  | "partner-feed-monitor"
   | "creative-vault"
   | "fixed-ops-sniper"
   | "roi-forecaster";
@@ -30,6 +39,9 @@ const tabs = [
   { key: "command-center", label: "Command Center", icon: LayoutDashboard },
   { key: "campaign-architect", label: "Campaign Architect", icon: PenTool },
   { key: "audience-matrix", label: "Audience Matrix", icon: Users },
+  { key: "activation-console", label: "Activation Console", icon: Send },
+  { key: "event-trace-inspector", label: "Event Trace Inspector", icon: Search },
+  { key: "partner-feed-monitor", label: "Partner Feed Monitor", icon: Server },
   { key: "creative-vault", label: "Creative Vault", icon: FolderKanban },
   { key: "fixed-ops-sniper", label: "Fixed Ops Sniper", icon: Wrench },
   { key: "roi-forecaster", label: "ROI Forecaster", icon: TrendingUp }
@@ -141,6 +153,9 @@ export default function App() {
           {activeTab === "command-center" && <CommandCenter />}
           {activeTab === "campaign-architect" && <CampaignArchitect />}
           {activeTab === "audience-matrix" && <AudienceMatrix />}
+          {activeTab === "activation-console" && <ActivationConsole />}
+          {activeTab === "event-trace-inspector" && <EventTraceInspector />}
+          {activeTab === "partner-feed-monitor" && <PartnerFeedMonitor />}
           {activeTab === "creative-vault" && <CreativeVault />}
           {activeTab === "fixed-ops-sniper" && <FixedOpsSniper />}
           {activeTab === "roi-forecaster" && <ROIForecaster />}

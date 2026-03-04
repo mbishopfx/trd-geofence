@@ -6,6 +6,7 @@ export type CampaignStatus = "active" | "paused" | "draft";
 export interface Fence {
   id: string;
   type: "home" | "competitor";
+  shapeType?: "radius" | "polygon";
   locationName: string;
   address: string;
   radiusFeet: number;
@@ -31,8 +32,32 @@ export interface Campaign {
   cpcEstimate: number;
   ctaUrl: string;
   message: string;
+  qualificationRules?: {
+    accuracyMaxM: number;
+    cooldownHours: number;
+    sessionBoundaryMin: number;
+    lateGraceMin: number;
+    dwellMin: number;
+    velocityMaxMph: number;
+  };
   fences: Fence[];
   missingInputs: string[];
+  integration?: {
+    source?: string;
+    customerId?: string;
+    googleCampaignId?: string;
+    googleCampaignName?: string;
+    channelType?: string;
+    syncedAt?: string;
+    geofenceLastPushedAt?: string;
+    geofenceTarget?: {
+      competitorName: string;
+      competitorAddress: string;
+      radiusMiles: number;
+      centerLat: number;
+      centerLng: number;
+    };
+  };
 }
 
 export interface MatchBackEvent {
@@ -67,6 +92,12 @@ export interface Dashboard {
   capturedWalkIns: number;
   leaderboard: LeaderboardItem[];
   liveFeed: MatchBackEvent[];
+  dsp?: {
+    eventsIngested: number;
+    devicesQualified: number;
+    audienceActive: number;
+    activationSuccessRate: number;
+  };
 }
 
 export interface SetupLocation {
@@ -123,6 +154,7 @@ export interface LaunchCampaignInput {
   message: string;
   fences: Array<{
     type: "home" | "competitor";
+    shapeType?: "radius" | "polygon";
     locationName: string;
     address: string;
     radiusFeet: number;
@@ -131,6 +163,14 @@ export interface LaunchCampaignInput {
     isEVMode: boolean;
     coordinates: Array<{ lat: number; lng: number }>;
   }>;
+  qualificationRules?: {
+    accuracyMaxM: number;
+    cooldownHours: number;
+    sessionBoundaryMin: number;
+    lateGraceMin: number;
+    dwellMin: number;
+    velocityMaxMph: number;
+  };
 }
 
 interface BootstrapResponse {
@@ -163,6 +203,65 @@ interface EventResponse {
   dashboard: Dashboard;
 }
 
+interface ActivateNissanLiveResponse {
+  ok: boolean;
+  integration: string;
+  accountName: string;
+  customerId: string;
+  selectedGoogleCampaign: {
+    id: string;
+    name: string;
+    status: string;
+    channelType: string;
+    impressions: number;
+    clicks: number;
+    ctr: number;
+    costMicros: number;
+    cost: number;
+  };
+  linkedCampaign: Campaign;
+  dashboard: Dashboard;
+  autoSync: GoogleAdsAutoSyncStatus;
+}
+
+interface GoogleAdsIntegrationStatus {
+  ready: boolean;
+  developerTokenReady: boolean;
+  refreshTokenReady: boolean;
+  loginCustomerIdSet: boolean;
+  nissanCustomerId: string | null;
+  apiVersion: string;
+  oauth: {
+    ready: boolean;
+    source: string;
+    error?: string;
+    filePath?: string | null;
+    tokenUri?: string;
+  };
+}
+
+interface GoogleAdsAutoSyncStatus {
+  enabled: boolean;
+  timerActive: boolean;
+  running: boolean;
+  intervalSec: number;
+  intervalMinutes: number;
+  tickCount: number;
+  nextRunAt: string | null;
+  lastRunStartedAt: string | null;
+  lastRunCompletedAt: string | null;
+  lastSuccessfulSyncAt: string | null;
+  lastError: string | null;
+  lastSummary: string | null;
+}
+
+interface GoogleAdsStatusResponse {
+  ok: boolean;
+  integration: string;
+  status: GoogleAdsIntegrationStatus;
+  autoSync: GoogleAdsAutoSyncStatus;
+}
+
 interface TrueRankState {
   apiBaseUrl: string;
   campaigns: Campaign[];
@@ -172,6 +271,8 @@ interface TrueRankState {
   platformOptions: PlatformOption[];
   activationChecklist: string[];
   activeCampaignId: string | null;
+  googleAdsIntegrationStatus: GoogleAdsIntegrationStatus | null;
+  googleAdsAutoSyncStatus: GoogleAdsAutoSyncStatus | null;
   isPresentationMode: boolean;
   loading: boolean;
   lastSyncAt: string | null;
@@ -181,9 +282,12 @@ interface TrueRankState {
   clearError: () => void;
   bootstrap: () => Promise<void>;
   refreshDashboard: () => Promise<void>;
+  refreshGoogleAdsStatus: () => Promise<void>;
   launchCampaign: (payload: LaunchCampaignInput) => Promise<Campaign>;
   recordEvent: (campaignId: string, type: "impression" | "click", count?: number) => Promise<void>;
   simulateCampaign: (campaignId: string, cycles?: number) => Promise<void>;
+  activateNissanLiveData: (campaignNameContains?: string) => Promise<Campaign>;
+  runNissanSyncNow: (campaignNameContains?: string) => Promise<Campaign>;
   setActiveCampaign: (campaignId: string | null) => void;
 }
 
@@ -196,7 +300,13 @@ const EMPTY_DASHBOARD: Dashboard = {
   totalSpend: 0,
   capturedWalkIns: 0,
   leaderboard: [],
-  liveFeed: []
+  liveFeed: [],
+  dsp: {
+    eventsIngested: 0,
+    devicesQualified: 0,
+    audienceActive: 0,
+    activationSuccessRate: 0
+  }
 };
 
 function toErrorMessage(error: unknown): string {
@@ -215,6 +325,8 @@ export const useTrueRankStore = create<TrueRankState>((set, get) => ({
   platformOptions: [],
   activationChecklist: [],
   activeCampaignId: null,
+  googleAdsIntegrationStatus: null,
+  googleAdsAutoSyncStatus: null,
   isPresentationMode: false,
   loading: false,
   lastSyncAt: null,
@@ -241,10 +353,11 @@ export const useTrueRankStore = create<TrueRankState>((set, get) => ({
 
     try {
       const apiBaseUrl = get().apiBaseUrl;
-      const [setupResponse, campaignsResponse, dashboardResponse] = await Promise.all([
+      const [setupResponse, campaignsResponse, dashboardResponse, googleAdsStatusResponse] = await Promise.all([
         apiRequest<BootstrapResponse>("/api/setup-template", {}, apiBaseUrl),
         apiRequest<CampaignsResponse>("/api/campaigns", {}, apiBaseUrl),
-        apiRequest<DashboardResponse>("/api/dashboard", {}, apiBaseUrl)
+        apiRequest<DashboardResponse>("/api/dashboard", {}, apiBaseUrl),
+        apiRequest<GoogleAdsStatusResponse>("/api/integrations/google-ads/status", {}, apiBaseUrl).catch(() => null)
       ]);
 
       set((state) => ({
@@ -255,6 +368,8 @@ export const useTrueRankStore = create<TrueRankState>((set, get) => ({
         dashboard: dashboardResponse.dashboard,
         activeCampaignId:
           state.activeCampaignId || campaignsResponse.campaigns[0]?.id || dashboardResponse.campaigns[0]?.id || null,
+        googleAdsIntegrationStatus: googleAdsStatusResponse?.status || state.googleAdsIntegrationStatus,
+        googleAdsAutoSyncStatus: googleAdsStatusResponse?.autoSync || state.googleAdsAutoSyncStatus,
         lastSyncAt: new Date().toISOString(),
         loading: false,
         error: null
@@ -268,15 +383,35 @@ export const useTrueRankStore = create<TrueRankState>((set, get) => ({
   refreshDashboard: async () => {
     try {
       const apiBaseUrl = get().apiBaseUrl;
-      const dashboardResponse = await apiRequest<DashboardResponse>("/api/dashboard", {}, apiBaseUrl);
+      const [dashboardResponse, googleAdsStatusResponse] = await Promise.all([
+        apiRequest<DashboardResponse>("/api/dashboard", {}, apiBaseUrl),
+        apiRequest<GoogleAdsStatusResponse>("/api/integrations/google-ads/status", {}, apiBaseUrl).catch(() => null)
+      ]);
 
       set((state) => ({
         dashboard: dashboardResponse.dashboard,
         campaigns: dashboardResponse.campaigns,
         activeCampaignId: state.activeCampaignId || dashboardResponse.campaigns[0]?.id || null,
+        googleAdsIntegrationStatus: googleAdsStatusResponse?.status || state.googleAdsIntegrationStatus,
+        googleAdsAutoSyncStatus: googleAdsStatusResponse?.autoSync || state.googleAdsAutoSyncStatus,
         lastSyncAt: new Date().toISOString(),
         error: null
       }));
+    } catch (error) {
+      set({ error: toErrorMessage(error) });
+      throw error;
+    }
+  },
+
+  refreshGoogleAdsStatus: async () => {
+    try {
+      const apiBaseUrl = get().apiBaseUrl;
+      const response = await apiRequest<GoogleAdsStatusResponse>("/api/integrations/google-ads/status", {}, apiBaseUrl);
+      set({
+        googleAdsIntegrationStatus: response.status,
+        googleAdsAutoSyncStatus: response.autoSync,
+        error: null
+      });
     } catch (error) {
       set({ error: toErrorMessage(error) });
       throw error;
@@ -326,7 +461,11 @@ export const useTrueRankStore = create<TrueRankState>((set, get) => ({
       );
 
       set((state) => ({
-        dashboard: response.dashboard,
+        dashboard: {
+          ...state.dashboard,
+          ...response.dashboard,
+          dsp: response.dashboard.dsp || state.dashboard.dsp
+        },
         activeCampaignId: state.activeCampaignId || campaignId,
         lastSyncAt: new Date().toISOString(),
         error: null
@@ -350,13 +489,93 @@ export const useTrueRankStore = create<TrueRankState>((set, get) => ({
       );
 
       set((state) => ({
-        dashboard: response.dashboard,
+        dashboard: {
+          ...state.dashboard,
+          ...response.dashboard,
+          dsp: response.dashboard.dsp || state.dashboard.dsp
+        },
         activeCampaignId: state.activeCampaignId || campaignId,
         lastSyncAt: new Date().toISOString(),
         error: null
       }));
     } catch (error) {
       set({ error: toErrorMessage(error) });
+      throw error;
+    }
+  },
+
+  activateNissanLiveData: async (campaignNameContains = "") => {
+    set({ loading: true, error: null });
+
+    try {
+      const apiBaseUrl = get().apiBaseUrl;
+      const response = await apiRequest<ActivateNissanLiveResponse>(
+        "/api/integrations/google-ads/nissan/activate",
+        {
+          method: "POST",
+          body: JSON.stringify({ campaignNameContains })
+        },
+        apiBaseUrl
+      );
+
+      set((state) => {
+        const filtered = state.campaigns.filter((campaign) => campaign.id !== response.linkedCampaign.id);
+        return {
+          loading: false,
+          campaigns: [response.linkedCampaign, ...filtered],
+          dashboard: {
+            ...state.dashboard,
+            ...response.dashboard,
+            dsp: response.dashboard.dsp || state.dashboard.dsp
+          },
+          activeCampaignId: response.linkedCampaign.id,
+          googleAdsAutoSyncStatus: response.autoSync,
+          lastSyncAt: new Date().toISOString(),
+          error: null
+        };
+      });
+
+      return response.linkedCampaign;
+    } catch (error) {
+      set({ loading: false, error: toErrorMessage(error) });
+      throw error;
+    }
+  },
+
+  runNissanSyncNow: async (campaignNameContains = "") => {
+    set({ loading: true, error: null });
+
+    try {
+      const apiBaseUrl = get().apiBaseUrl;
+      const response = await apiRequest<ActivateNissanLiveResponse>(
+        "/api/integrations/google-ads/nissan/sync-now",
+        {
+          method: "POST",
+          body: JSON.stringify({ campaignNameContains })
+        },
+        apiBaseUrl
+      );
+
+      set((state) => {
+        const filtered = state.campaigns.filter((campaign) => campaign.id !== response.linkedCampaign.id);
+        return {
+          loading: false,
+          campaigns: [response.linkedCampaign, ...filtered],
+          dashboard: {
+            ...state.dashboard,
+            ...response.dashboard,
+            dsp: response.dashboard.dsp || state.dashboard.dsp
+          },
+          activeCampaignId: response.linkedCampaign.id,
+          googleAdsAutoSyncStatus: response.autoSync,
+          lastSyncAt: new Date().toISOString(),
+          error: null
+        };
+      });
+
+      return response.linkedCampaign;
+    } catch (error) {
+      set({ loading: false, error: toErrorMessage(error) });
       throw error;
     }
   }
