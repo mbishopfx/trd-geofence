@@ -1,0 +1,18 @@
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Orbitron:wght@500;700;800&display=swap');
+@import "tailwindcss";
+
+:root { color-scheme: dark; }
+html, body, #root { height: 100%; }
+body { margin:0; background:#0a0a0a; color:#e5e7eb; font-family: 'Manrope', sans-serif; }
+
+.font-display { font-family: 'Orbitron', sans-serif; }
+.bg-tr-bg { background-color: #0a0a0a; }
+.text-tr-primary { color: #e60000; }
+.text-tr-secondary { color: #00e676; }
+.bg-tr-primary { background-color: #e60000; }
+.bg-tr-secondary { background-color: #00e676; }
+.border-tr-primary\/30 { border-color: color-mix(in oklab, #e60000 30%, transparent); }
+.tr-glass { border:1px solid rgba(255,255,255,0.12); background: rgba(255,255,255,0.05); backdrop-filter: blur(12px); box-shadow: 0 10px 30px rgba(0,0,0,0.45); }
+.live-dot { display:inline-block; width:10px; height:10px; border-radius:999px; background:#00e676; animation: live-pulse 1.8s infinite; }
+
+@keyframes live-pulse { 0%,100%{ transform:scale(1); opacity:1; box-shadow:0 0 0 0 rgba(0,230,118,.55)} 70%{ transform:scale(1.08); opacity:.85; box-shadow:0 0 0 10px rgba(0,230,118,0)} }
