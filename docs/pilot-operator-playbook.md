@@ -21,7 +21,10 @@
 - Review dead-letter reasons.
 3. Open `Audience Matrix`:
 - Confirm audience active count and reason-code distribution.
-4. Open `Activation Console`:
+4. Open `Advanced Analytics`:
+- Review conversion-zone funnel and trend charts.
+- Run attribution jobs for the selected campaign window when needed.
+5. Open `Activation Console`:
 - Create export job for Google/Meta as needed.
 - Validate item-level failures and retry failures if required.
 
@@ -37,7 +40,8 @@
 2. `POST /api/qualify/run` returns non-zero `processed` and expected reason breakdown.
 3. `GET /api/audiences/:campaignId` shows active memberships and expiry distribution.
 4. `POST /api/activation/jobs` creates job and `GET /api/activation/jobs/:jobId` shows item outcomes.
-5. Dashboard cards match SQL-level aggregate expectations.
+5. `GET /api/analytics/advanced` returns funnel + zone breakdown + latency trends.
+6. Dashboard cards match SQL-level aggregate expectations.
 
 ## 5) Incident response
 1. If ingest drops:

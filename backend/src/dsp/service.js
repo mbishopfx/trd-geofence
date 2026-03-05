@@ -109,26 +109,34 @@ function normalizePolygon(polygonGeojson) {
   return [];
 }
 
-function evaluatePointAgainstFence(event, fence) {
-  const shapeType = String(fence.shape_type || "radius");
+function evaluatePointAgainstShape(event, shape) {
+  const shapeType = String(shape.shape_type || "radius");
 
   if (shapeType === "polygon") {
-    const polygon = normalizePolygon(fence.polygon_geojson);
+    const polygon = normalizePolygon(shape.polygon_geojson);
     if (polygon.length < 3) {
       return false;
     }
     return pointInPolygon({ lat: event.lat, lng: event.lng }, polygon);
   }
 
-  const radiusMiles = Number(fence.radius_miles || 0);
-  const centerLat = Number(fence.center_lat);
-  const centerLng = Number(fence.center_lng);
+  const radiusMiles = Number(shape.radius_miles || 0);
+  const centerLat = Number(shape.center_lat);
+  const centerLng = Number(shape.center_lng);
   if (!Number.isFinite(radiusMiles) || radiusMiles <= 0 || !Number.isFinite(centerLat) || !Number.isFinite(centerLng)) {
     return false;
   }
 
   const distance = haversineMiles(event.lat, event.lng, centerLat, centerLng);
   return distance <= radiusMiles;
+}
+
+function evaluatePointAgainstFence(event, fence) {
+  return evaluatePointAgainstShape(event, fence);
+}
+
+function evaluatePointAgainstZone(event, zone) {
+  return evaluatePointAgainstShape(event, zone);
 }
 
 function requireDatabaseEnabled() {
@@ -892,6 +900,649 @@ async function getAudienceSummary(campaignId) {
   };
 }
 
+async function getCampaignTenant(campaignId) {
+  const result = await query(
+    `
+    SELECT id, tenant_id, name
+    FROM campaigns
+    WHERE id = $1
+    LIMIT 1
+    `,
+    [campaignId]
+  );
+
+  if (result.rowCount === 0) {
+    throw new Error(`Campaign not found: ${campaignId}`);
+  }
+
+  return result.rows[0];
+}
+
+function normalizeZonePayload(zone) {
+  const shapeType = String(zone.shapeType || zone.shape_type || "radius").trim().toLowerCase();
+  const normalizedShapeType = shapeType === "polygon" ? "polygon" : "radius";
+  const zoneType = String(zone.zoneType || zone.zone_type || "sales").trim().toLowerCase() || "sales";
+  const name = String(zone.name || "").trim();
+  const radiusMiles = Number(zone.radiusMiles ?? zone.radius_miles);
+  const centerLat = Number(zone.centerLat ?? zone.center_lat);
+  const centerLng = Number(zone.centerLng ?? zone.center_lng);
+  const polygonGeoJson = zone.polygonGeojson || zone.polygon_geojson || zone.polygon || zone.coordinates || null;
+
+  if (!name) {
+    throw new Error("Conversion zone name is required.");
+  }
+
+  if (normalizedShapeType === "radius") {
+    if (!Number.isFinite(radiusMiles) || radiusMiles <= 0) {
+      throw new Error("radiusMiles must be greater than 0 for radius conversion zones.");
+    }
+
+    if (!Number.isFinite(centerLat) || !Number.isFinite(centerLng)) {
+      throw new Error("centerLat and centerLng are required for radius conversion zones.");
+    }
+  }
+
+  if (normalizedShapeType === "polygon") {
+    const polygon = normalizePolygon(polygonGeoJson);
+    if (polygon.length < 3) {
+      throw new Error("Polygon conversion zones require at least 3 coordinates.");
+    }
+  }
+
+  return {
+    id: String(zone.id || "").trim() || crypto.randomUUID(),
+    name,
+    zoneType,
+    shapeType: normalizedShapeType,
+    radiusMiles: Number.isFinite(radiusMiles) ? Number(radiusMiles) : null,
+    centerLat: Number.isFinite(centerLat) ? Number(centerLat) : null,
+    centerLng: Number.isFinite(centerLng) ? Number(centerLng) : null,
+    polygonGeoJson: polygonGeoJson ? safeJson(polygonGeoJson, polygonGeoJson) : null
+  };
+}
+
+async function ensureDefaultConversionZone(tenantId, campaignId) {
+  const existing = await query(
+    `
+    SELECT id
+    FROM conversion_zones
+    WHERE tenant_id = $1
+      AND campaign_id = $2
+      AND is_active = TRUE
+    LIMIT 1
+    `,
+    [tenantId, campaignId]
+  );
+
+  if (existing.rowCount > 0) {
+    return existing.rows[0].id;
+  }
+
+  const fenceResult = await query(
+    `
+    SELECT id, name, shape_type, radius_miles, center_lat, center_lng, polygon_geojson
+    FROM geofences
+    WHERE campaign_id = $1
+      AND is_active = TRUE
+    ORDER BY CASE WHEN type = 'home' THEN 0 ELSE 1 END, created_at ASC
+    LIMIT 1
+    `,
+    [campaignId]
+  );
+
+  if (fenceResult.rowCount === 0) {
+    return null;
+  }
+
+  const fence = fenceResult.rows[0];
+  const polygon = normalizePolygon(fence.polygon_geojson);
+  const fallbackCenter = polygon[0] || null;
+  const centerLat = Number.isFinite(Number(fence.center_lat))
+    ? Number(fence.center_lat)
+    : fallbackCenter
+      ? Number(fallbackCenter.lat)
+      : null;
+  const centerLng = Number.isFinite(Number(fence.center_lng))
+    ? Number(fence.center_lng)
+    : fallbackCenter
+      ? Number(fallbackCenter.lng)
+      : null;
+
+  const zoneId = crypto.randomUUID();
+  await query(
+    `
+    INSERT INTO conversion_zones (
+      id,
+      tenant_id,
+      campaign_id,
+      name,
+      zone_type,
+      shape_type,
+      radius_miles,
+      polygon_geojson,
+      center_lat,
+      center_lng,
+      is_active
+    )
+    VALUES ($1, $2, $3, $4, 'sales', $5, $6, $7::jsonb, $8, $9, TRUE)
+    `,
+    [
+      zoneId,
+      tenantId,
+      campaignId,
+      `${String(fence.name || "Home")} Conversion Zone`,
+      String(fence.shape_type || "radius"),
+      Number(fence.radius_miles || 0.3) || 0.3,
+      JSON.stringify(polygon.length > 0 ? polygon : []),
+      centerLat,
+      centerLng
+    ]
+  );
+
+  return zoneId;
+}
+
+async function getConversionZones(campaignId) {
+  await ensureInfrastructure();
+  const campaign = await getCampaignTenant(campaignId);
+  await ensureDefaultConversionZone(campaign.tenant_id, campaign.id);
+
+  const zones = await query(
+    `
+    SELECT
+      id,
+      tenant_id,
+      campaign_id,
+      name,
+      zone_type,
+      shape_type,
+      radius_miles,
+      polygon_geojson,
+      center_lat,
+      center_lng,
+      is_active,
+      created_at,
+      updated_at
+    FROM conversion_zones
+    WHERE campaign_id = $1
+      AND is_active = TRUE
+    ORDER BY created_at ASC
+    `,
+    [campaignId]
+  );
+
+  return {
+    ok: true,
+    campaignId: campaign.id,
+    tenantId: campaign.tenant_id,
+    zones: zones.rows
+  };
+}
+
+async function upsertConversionZone(params, actor = "system") {
+  await ensureInfrastructure();
+
+  const campaignId = String(params.campaignId || "").trim();
+  if (!campaignId) {
+    throw new Error("campaignId is required.");
+  }
+
+  const zone = normalizeZonePayload(params.zone || {});
+  const campaign = await getCampaignTenant(campaignId);
+
+  await query(
+    `
+    INSERT INTO conversion_zones (
+      id,
+      tenant_id,
+      campaign_id,
+      name,
+      zone_type,
+      shape_type,
+      radius_miles,
+      polygon_geojson,
+      center_lat,
+      center_lng,
+      is_active,
+      updated_at
+    )
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, TRUE, NOW())
+    ON CONFLICT (id)
+    DO UPDATE
+    SET name = EXCLUDED.name,
+        zone_type = EXCLUDED.zone_type,
+        shape_type = EXCLUDED.shape_type,
+        radius_miles = EXCLUDED.radius_miles,
+        polygon_geojson = EXCLUDED.polygon_geojson,
+        center_lat = EXCLUDED.center_lat,
+        center_lng = EXCLUDED.center_lng,
+        is_active = TRUE,
+        updated_at = NOW()
+    `,
+    [
+      zone.id,
+      campaign.tenant_id,
+      campaign.id,
+      zone.name,
+      zone.zoneType,
+      zone.shapeType,
+      zone.shapeType === "radius" ? zone.radiusMiles : null,
+      JSON.stringify(zone.shapeType === "polygon" ? zone.polygonGeoJson : []),
+      zone.shapeType === "radius" ? zone.centerLat : null,
+      zone.shapeType === "radius" ? zone.centerLng : null
+    ]
+  );
+
+  await appendAuditLog(campaign.tenant_id, actor, "UPSERT_CONVERSION_ZONE", "conversion_zone", zone.id, {
+    campaignId: campaign.id,
+    zoneName: zone.name,
+    zoneType: zone.zoneType,
+    shapeType: zone.shapeType
+  });
+
+  return getConversionZones(campaign.id);
+}
+
+async function runConversionAttribution(params, actor = "system") {
+  await ensureInfrastructure();
+
+  const campaignId = String(params.campaignId || "").trim();
+  if (!campaignId) {
+    throw new Error("campaignId is required.");
+  }
+
+  const campaign = await getCampaignTenant(campaignId);
+  const tenantId = String(params.tenantId || campaign.tenant_id || dspConfig.pilotTenantId);
+  const from = parseTimestamp(params.from) || new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+  const to = parseTimestamp(params.to) || new Date();
+
+  await ensureDefaultConversionZone(tenantId, campaignId);
+
+  const zonesResult = await query(
+    `
+    SELECT *
+    FROM conversion_zones
+    WHERE tenant_id = $1
+      AND campaign_id = $2
+      AND is_active = TRUE
+    ORDER BY created_at ASC
+    `,
+    [tenantId, campaignId]
+  );
+
+  const zones = zonesResult.rows;
+  if (zones.length === 0) {
+    return {
+      ok: true,
+      tenantId,
+      campaignId,
+      from: from.toISOString(),
+      to: to.toISOString(),
+      scannedEvents: 0,
+      conversionsAttributed: 0
+    };
+  }
+
+  const events = await query(
+    `
+    SELECT
+      e.id,
+      e.device_id_hash,
+      e.event_time,
+      e.lat,
+      e.lng,
+      m.qualified_at
+    FROM location_events_norm e
+    INNER JOIN audience_memberships m
+      ON m.tenant_id = e.tenant_id
+     AND m.campaign_id = $2
+     AND m.device_id_hash = e.device_id_hash
+    WHERE e.tenant_id = $1
+      AND e.event_time BETWEEN $3 AND $4
+      AND m.qualified_at <= e.event_time
+      AND m.expires_at >= e.event_time
+    ORDER BY e.event_time ASC
+    `,
+    [tenantId, campaignId, from.toISOString(), to.toISOString()]
+  );
+
+  let conversionsAttributed = 0;
+  const zoneBreakdown = {};
+
+  for (const row of events.rows) {
+    const eventTime = new Date(row.event_time);
+    const qualifiedAt = new Date(row.qualified_at);
+    const event = {
+      lat: Number(row.lat),
+      lng: Number(row.lng)
+    };
+    const conversionDate = eventTime.toISOString().slice(0, 10);
+    const hoursToConvert = Math.max(0, (eventTime.getTime() - qualifiedAt.getTime()) / (60 * 60 * 1000));
+
+    for (const zone of zones) {
+      const inside = evaluatePointAgainstZone(event, zone);
+      if (!inside) {
+        continue;
+      }
+
+      const insertResult = await query(
+        `
+        INSERT INTO conversion_events (
+          tenant_id,
+          campaign_id,
+          zone_id,
+          device_id_hash,
+          source_event_id,
+          event_time,
+          conversion_date,
+          hours_to_convert,
+          attributed
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7::date, $8, TRUE)
+        ON CONFLICT (campaign_id, zone_id, device_id_hash, conversion_date)
+        DO NOTHING
+        RETURNING id
+        `,
+        [
+          tenantId,
+          campaignId,
+          zone.id,
+          row.device_id_hash,
+          row.id,
+          eventTime.toISOString(),
+          conversionDate,
+          round(hoursToConvert, 4)
+        ]
+      );
+
+      if (insertResult.rowCount > 0) {
+        conversionsAttributed += 1;
+        zoneBreakdown[zone.id] = (zoneBreakdown[zone.id] || 0) + 1;
+      }
+    }
+  }
+
+  await appendAuditLog(tenantId, actor, "RUN_CONVERSION_ATTRIBUTION", "campaign", campaignId, {
+    from: from.toISOString(),
+    to: to.toISOString(),
+    scannedEvents: events.rowCount,
+    conversionsAttributed,
+    zoneBreakdown
+  });
+
+  return {
+    ok: true,
+    tenantId,
+    campaignId,
+    from: from.toISOString(),
+    to: to.toISOString(),
+    scannedEvents: events.rowCount,
+    conversionsAttributed,
+    zoneBreakdown
+  };
+}
+
+async function getAdvancedCampaignAnalytics(filters = {}) {
+  await ensureInfrastructure();
+
+  const campaignId = String(filters.campaignId || "").trim();
+  if (!campaignId) {
+    throw new Error("campaignId is required.");
+  }
+
+  const campaign = await getCampaignTenant(campaignId);
+  const tenantId = campaign.tenant_id;
+  const from = parseTimestamp(filters.from) || new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+  const to = parseTimestamp(filters.to) || new Date();
+
+  await ensureDefaultConversionZone(tenantId, campaignId);
+
+  const [eventsEvaluatedResult, qualifiedDevicesResult, activeAudienceResult, convertedDevicesResult, avgHoursResult] =
+    await Promise.all([
+      query(
+        `
+        SELECT COUNT(*)::int AS value
+        FROM qualification_events
+        WHERE campaign_id = $1
+          AND event_time BETWEEN $2 AND $3
+        `,
+        [campaignId, from.toISOString(), to.toISOString()]
+      ),
+      query(
+        `
+        SELECT COUNT(DISTINCT device_id_hash)::int AS value
+        FROM qualification_events
+        WHERE campaign_id = $1
+          AND qualified = TRUE
+          AND event_time BETWEEN $2 AND $3
+        `,
+        [campaignId, from.toISOString(), to.toISOString()]
+      ),
+      query(
+        `
+        SELECT COUNT(DISTINCT device_id_hash)::int AS value
+        FROM audience_memberships
+        WHERE campaign_id = $1
+          AND status = 'active'
+          AND expires_at > NOW()
+        `,
+        [campaignId]
+      ),
+      query(
+        `
+        SELECT COUNT(DISTINCT device_id_hash)::int AS value
+        FROM conversion_events
+        WHERE campaign_id = $1
+          AND event_time BETWEEN $2 AND $3
+        `,
+        [campaignId, from.toISOString(), to.toISOString()]
+      ),
+      query(
+        `
+        SELECT COALESCE(AVG(hours_to_convert), 0)::float AS value
+        FROM conversion_events
+        WHERE campaign_id = $1
+          AND event_time BETWEEN $2 AND $3
+        `,
+        [campaignId, from.toISOString(), to.toISOString()]
+      )
+    ]);
+
+  const eventsEvaluated = Number(eventsEvaluatedResult.rows[0]?.value || 0);
+  const qualifiedDevices = Number(qualifiedDevicesResult.rows[0]?.value || 0);
+  const activeAudience = Number(activeAudienceResult.rows[0]?.value || 0);
+  const convertedDevices = Number(convertedDevicesResult.rows[0]?.value || 0);
+  const avgHoursToConvert = Number(avgHoursResult.rows[0]?.value || 0);
+  const conversionRatePct = qualifiedDevices > 0 ? round((convertedDevices / qualifiedDevices) * 100, 2) : 0;
+
+  const [dailyTrendResult, zoneBreakdownResult, latencyResult, hourlyResult, reasonsResult, zonesResult] =
+    await Promise.all([
+      query(
+        `
+        WITH date_axis AS (
+          SELECT generate_series(
+            date_trunc('day', $2::timestamptz),
+            date_trunc('day', $3::timestamptz),
+            interval '1 day'
+          ) AS day
+        ),
+        qualified AS (
+          SELECT date_trunc('day', event_time) AS day, COUNT(DISTINCT device_id_hash)::int AS qualified_devices
+          FROM qualification_events
+          WHERE campaign_id = $1
+            AND qualified = TRUE
+            AND event_time BETWEEN $2 AND $3
+          GROUP BY 1
+        ),
+        converted AS (
+          SELECT date_trunc('day', event_time) AS day, COUNT(DISTINCT device_id_hash)::int AS converted_devices
+          FROM conversion_events
+          WHERE campaign_id = $1
+            AND event_time BETWEEN $2 AND $3
+          GROUP BY 1
+        )
+        SELECT
+          to_char(date_axis.day, 'YYYY-MM-DD') AS day,
+          COALESCE(qualified.qualified_devices, 0)::int AS qualified_devices,
+          COALESCE(converted.converted_devices, 0)::int AS converted_devices
+        FROM date_axis
+        LEFT JOIN qualified ON qualified.day = date_axis.day
+        LEFT JOIN converted ON converted.day = date_axis.day
+        ORDER BY date_axis.day ASC
+        `,
+        [campaignId, from.toISOString(), to.toISOString()]
+      ),
+      query(
+        `
+        SELECT
+          z.id AS zone_id,
+          z.name AS zone_name,
+          z.zone_type AS zone_type,
+          COUNT(c.id)::int AS conversions,
+          COUNT(DISTINCT c.device_id_hash)::int AS unique_devices,
+          COALESCE(AVG(c.hours_to_convert), 0)::float AS avg_hours_to_convert
+        FROM conversion_zones z
+        LEFT JOIN conversion_events c
+          ON c.zone_id = z.id
+         AND c.campaign_id = z.campaign_id
+         AND c.event_time BETWEEN $2 AND $3
+        WHERE z.campaign_id = $1
+          AND z.is_active = TRUE
+        GROUP BY z.id, z.name, z.zone_type
+        ORDER BY conversions DESC, zone_name ASC
+        `,
+        [campaignId, from.toISOString(), to.toISOString()]
+      ),
+      query(
+        `
+        SELECT
+          bucket,
+          COUNT(*)::int AS count
+        FROM (
+          SELECT
+            CASE
+              WHEN hours_to_convert < 1 THEN '<1h'
+              WHEN hours_to_convert < 6 THEN '1-6h'
+              WHEN hours_to_convert < 24 THEN '6-24h'
+              WHEN hours_to_convert < 72 THEN '1-3d'
+              ELSE '3d+'
+            END AS bucket
+          FROM conversion_events
+          WHERE campaign_id = $1
+            AND event_time BETWEEN $2 AND $3
+        ) buckets
+        GROUP BY bucket
+        ORDER BY
+          CASE bucket
+            WHEN '<1h' THEN 1
+            WHEN '1-6h' THEN 2
+            WHEN '6-24h' THEN 3
+            WHEN '1-3d' THEN 4
+            ELSE 5
+          END
+        `,
+        [campaignId, from.toISOString(), to.toISOString()]
+      ),
+      query(
+        `
+        SELECT
+          EXTRACT(HOUR FROM event_time)::int AS hour,
+          COUNT(*)::int AS count
+        FROM conversion_events
+        WHERE campaign_id = $1
+          AND event_time BETWEEN $2 AND $3
+        GROUP BY 1
+        ORDER BY 1 ASC
+        `,
+        [campaignId, from.toISOString(), to.toISOString()]
+      ),
+      query(
+        `
+        SELECT reason_code, COUNT(*)::int AS count
+        FROM qualification_events
+        WHERE campaign_id = $1
+          AND event_time BETWEEN $2 AND $3
+        GROUP BY reason_code
+        ORDER BY count DESC
+        LIMIT 8
+        `,
+        [campaignId, from.toISOString(), to.toISOString()]
+      ),
+      query(
+        `
+        SELECT
+          id,
+          name,
+          zone_type,
+          shape_type,
+          radius_miles,
+          center_lat,
+          center_lng
+        FROM conversion_zones
+        WHERE campaign_id = $1
+          AND is_active = TRUE
+        ORDER BY created_at ASC
+        `,
+        [campaignId]
+      )
+    ]);
+
+  const dailyTrend = dailyTrendResult.rows.map((row) => {
+    const qualified = Number(row.qualified_devices || 0);
+    const converted = Number(row.converted_devices || 0);
+    return {
+      day: row.day,
+      qualifiedDevices: qualified,
+      convertedDevices: converted,
+      conversionRatePct: qualified > 0 ? round((converted / qualified) * 100, 2) : 0
+    };
+  });
+
+  const hourly = Array.from({ length: 24 }, (_, hour) => {
+    const found = hourlyResult.rows.find((row) => Number(row.hour) === hour);
+    return {
+      hour,
+      count: Number(found?.count || 0)
+    };
+  });
+
+  return {
+    ok: true,
+    tenantId,
+    campaignId,
+    campaignName: campaign.name,
+    from: from.toISOString(),
+    to: to.toISOString(),
+    funnel: {
+      eventsEvaluated,
+      qualifiedDevices,
+      activeAudience,
+      convertedDevices,
+      conversionRatePct,
+      avgHoursToConvert: round(avgHoursToConvert, 2)
+    },
+    dailyTrend,
+    zoneBreakdown: zoneBreakdownResult.rows.map((row) => ({
+      zoneId: row.zone_id,
+      zoneName: row.zone_name,
+      zoneType: row.zone_type,
+      conversions: Number(row.conversions || 0),
+      uniqueDevices: Number(row.unique_devices || 0),
+      avgHoursToConvert: round(Number(row.avg_hours_to_convert || 0), 2)
+    })),
+    latencyBuckets: latencyResult.rows.map((row) => ({
+      bucket: row.bucket,
+      count: Number(row.count || 0)
+    })),
+    hourly,
+    topReasons: reasonsResult.rows.map((row) => ({
+      reason_code: row.reason_code,
+      count: Number(row.count || 0)
+    })),
+    zones: zonesResult.rows
+  };
+}
+
 async function writeCsv(filePath, rows) {
   await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
   const lines = ["device_id_hash,mapped_identifier"]; 
@@ -1442,6 +2093,10 @@ module.exports = {
   runQualificationWindow,
   processQualificationQueueJob,
   getAudienceSummary,
+  getConversionZones,
+  upsertConversionZone,
+  runConversionAttribution,
+  getAdvancedCampaignAnalytics,
   createActivationJob,
   getActivationJob,
   retryActivationJobFailures,

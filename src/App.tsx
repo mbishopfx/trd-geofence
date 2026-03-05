@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+  BarChart3,
   FolderKanban,
   LayoutDashboard,
   PenTool,
@@ -23,11 +24,13 @@ import { ROIForecaster } from "./pages/ROIForecaster";
 import ActivationConsole from "./pages/ActivationConsole";
 import EventTraceInspector from "./pages/EventTraceInspector";
 import PartnerFeedMonitor from "./pages/PartnerFeedMonitor";
+import AdvancedAnalytics from "./pages/AdvancedAnalytics";
 
 type TabKey =
   | "command-center"
   | "campaign-architect"
   | "audience-matrix"
+  | "advanced-analytics"
   | "activation-console"
   | "event-trace-inspector"
   | "partner-feed-monitor"
@@ -39,6 +42,7 @@ const tabs = [
   { key: "command-center", label: "Command Center", icon: LayoutDashboard },
   { key: "campaign-architect", label: "Campaign Architect", icon: PenTool },
   { key: "audience-matrix", label: "Audience Matrix", icon: Users },
+  { key: "advanced-analytics", label: "Advanced Analytics", icon: BarChart3 },
   { key: "activation-console", label: "Activation Console", icon: Send },
   { key: "event-trace-inspector", label: "Event Trace Inspector", icon: Search },
   { key: "partner-feed-monitor", label: "Partner Feed Monitor", icon: Server },
@@ -153,6 +157,7 @@ export default function App() {
           {activeTab === "command-center" && <CommandCenter />}
           {activeTab === "campaign-architect" && <CampaignArchitect />}
           {activeTab === "audience-matrix" && <AudienceMatrix />}
+          {activeTab === "advanced-analytics" && <AdvancedAnalytics />}
           {activeTab === "activation-console" && <ActivationConsole />}
           {activeTab === "event-trace-inspector" && <EventTraceInspector />}
           {activeTab === "partner-feed-monitor" && <PartnerFeedMonitor />}

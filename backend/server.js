@@ -12,6 +12,10 @@ const {
   ingestLocationEvents,
   runQualificationWindow,
   getAudienceSummary,
+  getConversionZones,
+  upsertConversionZone,
+  runConversionAttribution,
+  getAdvancedCampaignAnalytics,
   createActivationJob,
   getActivationJob,
   retryActivationJobFailures,
@@ -1169,6 +1173,10 @@ app.get("/", (_req, res) => {
       googleAdsNissanPushGeofence: "POST /api/integrations/google-ads/nissan/geofence/push",
       ingestLocationEvents: "POST /api/ingest/location-events",
       runQualification: "POST /api/qualify/run",
+      conversionZonesList: "GET /api/conversion-zones/:campaignId",
+      conversionZonesUpsert: "POST /api/conversion-zones",
+      conversionAttributionRun: "POST /api/analytics/conversion-zones/run",
+      advancedAnalytics: "GET /api/analytics/advanced",
       audiences: "GET /api/audiences/:campaignId",
       activationJobs: "POST /api/activation/jobs",
       activationJobStatus: "GET /api/activation/jobs/:jobId",
@@ -1850,6 +1858,97 @@ app.post("/api/qualify/run", async (req, res) => {
     res.json(result);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to run qualification.";
+    const statusCode = message.toLowerCase().includes("required") || message.toLowerCase().includes("not found") ? 400 : 500;
+    res.status(statusCode).json({ ok: false, error: message });
+  }
+});
+
+app.get("/api/conversion-zones/:campaignId", async (req, res) => {
+  try {
+    if (!hasDatabase()) {
+      res.status(503).json({ ok: false, error: "DATABASE_URL is required for conversion zones." });
+      return;
+    }
+
+    const result = await getConversionZones(req.params.campaignId);
+    res.json(result);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Failed to fetch conversion zones.";
+    const statusCode = message.toLowerCase().includes("not found") ? 404 : 500;
+    res.status(statusCode).json({ ok: false, error: message });
+  }
+});
+
+app.post("/api/conversion-zones", async (req, res) => {
+  try {
+    if (!hasDatabase()) {
+      res.status(503).json({ ok: false, error: "DATABASE_URL is required for conversion zones." });
+      return;
+    }
+
+    if (!requireOperatorAccess(req, res)) {
+      return;
+    }
+
+    const result = await upsertConversionZone(
+      {
+        campaignId: req.body?.campaignId,
+        zone: req.body?.zone || {}
+      },
+      "operator:upsert-conversion-zone"
+    );
+
+    res.status(201).json(result);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Failed to save conversion zone.";
+    const statusCode = message.toLowerCase().includes("required") || message.toLowerCase().includes("not found") ? 400 : 500;
+    res.status(statusCode).json({ ok: false, error: message });
+  }
+});
+
+app.post("/api/analytics/conversion-zones/run", async (req, res) => {
+  try {
+    if (!hasDatabase()) {
+      res.status(503).json({ ok: false, error: "DATABASE_URL is required for conversion attribution." });
+      return;
+    }
+
+    if (!requireOperatorAccess(req, res)) {
+      return;
+    }
+
+    const result = await runConversionAttribution(
+      {
+        tenantId: req.body?.tenantId || dspConfig.pilotTenantId,
+        campaignId: req.body?.campaignId,
+        from: req.body?.from,
+        to: req.body?.to
+      },
+      "operator:run-conversion-attribution"
+    );
+    res.json(result);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Failed to run conversion attribution.";
+    const statusCode = message.toLowerCase().includes("required") || message.toLowerCase().includes("not found") ? 400 : 500;
+    res.status(statusCode).json({ ok: false, error: message });
+  }
+});
+
+app.get("/api/analytics/advanced", async (req, res) => {
+  try {
+    if (!hasDatabase()) {
+      res.status(503).json({ ok: false, error: "DATABASE_URL is required for advanced analytics." });
+      return;
+    }
+
+    const result = await getAdvancedCampaignAnalytics({
+      campaignId: req.query.campaignId,
+      from: req.query.from,
+      to: req.query.to
+    });
+    res.json(result);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Failed to fetch advanced analytics.";
     const statusCode = message.toLowerCase().includes("required") || message.toLowerCase().includes("not found") ? 400 : 500;
     res.status(statusCode).json({ ok: false, error: message });
   }
